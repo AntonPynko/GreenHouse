@@ -1,0 +1,4 @@
+AirTemperatureLimits 10 15
+SoilTemperatureLimits 20 25
+SoilMoistureLimits 300 700
+Light 10 23
