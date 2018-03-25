@@ -9,6 +9,18 @@ class Config:
     devices = "devices"
     heating, watering, blowing, light = "Heating", "Watering", "Blowing", "Light"
 
+    # Параметры для Arduino
+    temp_limits, soilt_limits, soilm_limits = "AirTemperatureLimits", "SoilTemperatureLimits", "SoilMoistureLimits"
+
+    # Параметры БД
+    pdb = 'dbname=mydb user=postgres host=localhost port=5432'
+
+    # Запросы в БД
+    insert = "INSERT INTO greenhouse (tempe, hum, press, ground_tempe, " \
+             "ground_gygro, heating, watering, blowing, light) VALUES ({}," \
+             " {}, {}, ARRAY{}, ARRAY{}, {}, {}, {}, {})"
+    select = 'SELECT * FROM greenhouse;'
+
     # Файл с параметрами растения
     file = "cucumis.txt"
 
@@ -18,6 +30,10 @@ class Config:
     # Параметры COM порта
     COM = 'COM4'
     Speed = 9600
+
+    # Параметры HTTP порта
+    Port = 7777
+    Host = 'localhost'
 
     # Убираем возможность изменения констант
     def __setattr__(self, *_):
