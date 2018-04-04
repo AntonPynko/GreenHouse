@@ -11,8 +11,9 @@ from tornado import gen
 import momoko
 import serial.tools.list_ports
 import threading
+import csv
+import ast
 
-current_light_state = Config.light_state
 
 ioloop = IOLoop.instance()
 conn = momoko.Pool(dsn=Config.pdb, size=1, ioloop=ioloop)
@@ -51,14 +52,15 @@ class InsertHandler:
     @gen.coroutine
     def send_to_db(self):
         flag = 0
-        i = 0
+        current_light_state = 2
+        readjson = 0
         while flag == 0:
             yield gen.sleep(1)
-            yield communication_test.send_data()
+            yield communication_test.send_data(readjson, current_light_state)
             yield gen.sleep(2)
             received_data = yield communication_test.get_data()
-            # yield gen.sleep(1)
-            #print(received_data)
+            if not isinstance(received_data, dict):
+                break
             data_to_db = Config.insert.format(received_data[Config.temperature],
                                               received_data[Config.humidity],
                                               received_data[Config.pressure],
@@ -72,9 +74,18 @@ class InsertHandler:
             # print(data_to_db)
             yield conn.execute(data_to_db)
             print("I've sent some data to db")
-            i += 1
-            if i == 50:
-                flag = 1
+
+            if received_data[Config.light]:
+                current_light_state = 1
+            else:
+                current_light_state = 0
+
+            if not received_data["ReadJson"]:
+                print("json wasn't read")
+                readjson = 1
+            else:
+                print("success")
+                readjson = 0
 
 
 class BaseHandler(tornado.web.RequestHandler):
@@ -87,15 +98,36 @@ class Handler(BaseHandler):
     @gen.coroutine
     def get(self):
         cursor = yield self.db.execute(Config.select)
-        for record in cursor:
-            self.write("Line: {}".format(record)) # Асинхронно пишем в сокет
-        self.finish()       # Завершаем составление ответа
+        newjson, fulljson = dict(), dict()
+        for line in cursor:
+            newjson["AirTemperature"] = line[1]
+            newjson["AirHumidity"] = line[2]
+            newjson["AirPress"] = line[3]
+            newjson["GroundTemp"] = line[4]
+            newjson["GroundGygro"] = line[5]
+            newjson["Heating"] = line[6]
+            newjson["Watering"] = line[7]
+            newjson["Blowing"] = line[8]
+            newjson["Light"] = line[9]
+            fulljson[line[10].strftime('%A, %d. %B %Y %I:%M:%S %p')] = newjson
+        self.write(fulljson)
+        self.write("\n")
+        self.finish()
 
 
 class ComCommunication:
     def __init__(self, name, speed):
-        self.name = name
+        self.name = name    # параметры порта
         self.speed = speed
+
+        # self.current_light_state = 2  # показания света ( 1 - вкл, 0 - выкл, 2 - начальное)
+        self.starting_hour = time.localtime().tm_hour  # время, когда был запущен процесс роста
+        self.starting_min = time.localtime().tm_min
+        self.current_day = -1  # счетчик текущего дня
+        self.light_period = list()  # период освещения растения ( получаем из csv, изначально 0 )
+        self.counter = 0  # счетчик изменения недели ( 1 - обновлено, 0 - не обновлено)
+        self.ard_data = dict()  # данные для Arduino
+
         try:
             self.data = serial.Serial(self.name, self.speed)
 
@@ -104,8 +136,8 @@ class ComCommunication:
 
     @gen.coroutine
     def get_data(self):
-            #self.data.close()
-            #self.data.open()
+            # self.data.close()
+            # self.data.open()
             data_sensor = str(self.data.readline())
             data_sensor = data_sensor[2:len(data_sensor)-5]
             # print(data_sensor)
@@ -130,35 +162,55 @@ class ComCommunication:
 
                 data_to_send[Config.light] = parsed_string[Config.light]
 
+                data_to_send["ReadJson"] = parsed_string["ReadJson"]
+
                 # print(data_to_send)
 
                 return data_to_send
             except json.decoder.JSONDecodeError:
                 print(json.decoder.JSONDecodeError)
+                return 1
 
     @gen.coroutine
-    def send_data(self):
-        global current_light_state
+    def send_data(self, readjson, light_state):
         e = time.localtime()
-        data = dict()
-        with open(Config.file, "r") as file:
-            for line in file:
-                splitted_text = line.split()
-                data[splitted_text[0]] = [int(splitted_text[1]), int(splitted_text[2])]
-        lightRange = list(range(data[Config.light][0], data[Config.light][1] + 1))
+        isnotread = readjson
+        current_light_state = light_state
 
-        if (e.tm_hour in lightRange) & (current_light_state != 1):
-            data[Config.light] = 1
-            data_to_send = json.dumps(data)
-            current_light_state = 1
-            print(data_to_send.encode('ascii'))
+        if (e.tm_hour == self.starting_hour) & \
+                (e.tm_min == 1 + self.starting_min):
+            self.counter = 0
+
+        if (e.tm_hour == self.starting_hour) & \
+                (e.tm_min == self.starting_min) & (self.counter != 1):
+            self.current_day += 1
+            self.counter = 1
+            with open(Config.file, "r") as file:
+                reader = csv.DictReader(file)
+                for row in reader:
+                    if self.current_day in list(
+                            range(ast.literal_eval(row["day"])[0], ast.literal_eval(row["day"])[1] + 1)):
+                        self.ard_data[Config.temp_limits] = ast.literal_eval(row["temp"])
+                        # self.ard_data["AirHumidityLimits"] = ast.literal_eval(row["hum"])
+                        self.ard_data[Config.soilt_limits] = ast.literal_eval(row["ground_temp"])
+                        self.ard_data[Config.soilm_limits] = ast.literal_eval(row["hum_seed"])
+                        self.ard_data["Watering"] = ast.literal_eval(row["watering"])
+                        self.ard_data[Config.light] = ast.literal_eval(row["light"])
+            if self.ard_data[Config.light] != 0:
+                self.light_period = list(range(0, self.ard_data[Config.light]+1))
+
+        if (e.tm_hour in self.light_period) & (current_light_state != 1) & isnotread:
+            self.ard_data[Config.light] = 1
+            self.current_light_state = 1
+            data_to_send = json.dumps(self.ard_data)
             self.data.write(data_to_send.encode('ascii'))
             print("I've sent data to Arduino")
 
-        elif (e.tm_hour not in lightRange) & (current_light_state != 0):
-            data[Config.light] = 0
-            current_light_state = 0
-            data_to_send = json.dumps(data)
+        elif (e.tm_hour not in self.light_period) & (current_light_state != 0) & isnotread:
+            self.ard_data[Config.light] = 0
+            self.current_light_state = 0
+            data_to_send = json.dumps(self.ard_data)
+            # print(data_to_send.encode('ascii'))
             self.data.write(data_to_send.encode('ascii'))
             print("I've sent some data to turn off lights")
 

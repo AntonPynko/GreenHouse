@@ -19,10 +19,14 @@ class Config:
     insert = "INSERT INTO greenhouse (tempe, hum, press, ground_tempe, " \
              "ground_gygro, heating, watering, blowing, light) VALUES ({}," \
              " {}, {}, ARRAY{}, ARRAY{}, {}, {}, {}, {})"
-    select = 'SELECT * FROM greenhouse;'
+    select = """ 
+             SELECT *
+             FROM greenhouse 
+             WHERE post_time >= '2018-03-23' AND post_time < '2018-03-25'
+             """
 
     # Файл с параметрами растения
-    file = "cucumis.txt"
+    file = "plant2.csv"
 
     # Начальное состояние лампочки (2 - начало работы | 1 - включена | 0 - отключена)
     light_state = 2
