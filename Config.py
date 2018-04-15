@@ -22,7 +22,7 @@ class Config:
     select = """ 
              SELECT *
              FROM greenhouse 
-             WHERE post_time >= '2018-03-23' AND post_time < '2018-03-25'
+             WHERE post_time >= '{}'
              """
 
     # Файл с параметрами растения
@@ -32,12 +32,15 @@ class Config:
     light_state = 2
 
     # Параметры COM порта
-    COM = 'COM4'
+    COM = 'COM3'
     Speed = 9600
 
     # Параметры HTTP порта
     Port = 7777
     Host = 'localhost'
+
+    # Время начала цикла (c 0-го дня)
+    Day = 0
 
     # Убираем возможность изменения констант
     def __setattr__(self, *_):
