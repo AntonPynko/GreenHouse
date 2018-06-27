@@ -16,6 +16,33 @@ class Config:
     pdb = 'dbname=mydb user=postgres host=localhost port=5432'
 
     # Запросы в БД
+    get_starting_time = """ 
+                         SELECT post_time
+                         FROM {} 
+                         WHERE id = 1
+                        """
+    create = """ 
+             CREATE TABLE {table}
+            (
+              id serial NOT NULL,
+              tempe double precision,
+              hum double precision,
+              press double precision,
+              ground_tempe integer[],
+              ground_gygro integer[],
+              heating boolean,
+              watering boolean,
+              blowing boolean,
+              light boolean,
+              post_time timestamp with time zone DEFAULT now(),
+              CONSTRAINT {id} PRIMARY KEY (id)
+            )
+            WITH (
+              OIDS=FALSE
+            );
+            ALTER TABLE {table}
+              OWNER TO postgres;
+            """
     insert = "INSERT INTO greenhouse (tempe, hum, press, ground_tempe, " \
              "ground_gygro, heating, watering, blowing, light) VALUES ({}," \
              " {}, {}, ARRAY{}, ARRAY{}, {}, {}, {}, {})"
@@ -24,6 +51,9 @@ class Config:
              FROM greenhouse 
              WHERE post_time >= '{}'
              """
+
+    # Название выращиваемого растения
+    plant = "plant2"
 
     # Файл с параметрами растения
     file = "plant2.csv"
@@ -39,8 +69,8 @@ class Config:
     Port = 7777
     Host = 'localhost'
 
-    # Время начала цикла (c 0-го дня)
-    Day = 0
+    # Файл логов ошибок
+    logs = "logs.txt"
 
     # Убираем возможность изменения констант
     def __setattr__(self, *_):

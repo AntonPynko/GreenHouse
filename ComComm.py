@@ -14,7 +14,7 @@ import serial.tools.list_ports
 import threading
 import csv
 import ast
-
+import psycopg2
 
 ioloop = IOLoop.instance()
 conn = momoko.Pool(dsn=Config.pdb, size=1, ioloop=ioloop)
@@ -24,7 +24,7 @@ ioloop.start()
 try:
     fut.result()  # raises exception on connection error
 except Exception as error:
-    with open("logs.txt", "a") as logfile:
+    with open(Config.logs, "a") as logfile:
         logfile.write(time.strftime('%Y-%m-%d %H:%M:%S | ', time.localtime()) +
                       "Exception in connection to db: " + str(error))
         logfile.write("\n")
@@ -62,14 +62,25 @@ class CaptureImg:
     @gen.coroutine
     def save_img(self):
         cap = cv2.VideoCapture(0)
+        i = (1, -1, -2, 2, 0)
+        e = time.localtime().tm_hour
+        counter = 0
         while cap.isOpened():
             ret, frame = cap.read()
+            yield gen.sleep(5)
             if ret:
-                yield gen.sleep(28800)
-                if not os.path.exists(time.strftime('%Y%m%d', time.localtime())):
-                    os.makedirs(time.strftime('%Y%m%d', time.localtime()))
-                cv2.imwrite('{}/{}.jpg'.format(time.strftime('%Y%m%d', time.localtime()),
-                                               time.strftime('%Y%m%d%H%M', time.localtime())), frame)
+                if e < 23:
+                    if time.localtime().tm_hour == (e + 1):
+                        counter = 0
+                else:
+                    if e - time.localtime().tm_hour >= 1:
+                        counter = 0
+                if ((time.localtime().tm_hour - e) / 8 in i) & (counter == 0):
+                    if not os.path.exists(time.strftime('%Y%m%d', time.localtime())):
+                        os.makedirs(time.strftime('%Y%m%d', time.localtime()))
+                    cv2.imwrite('{}/{}.jpg'.format(time.strftime('%Y%m%d', time.localtime()),
+                                                   time.strftime('%Y%m%d%H%M', time.localtime())), frame)
+                    counter = 1
             else:
                 break
         # Release everything if job is finished
@@ -83,6 +94,29 @@ class InsertHandler:
         flag = 0
         current_light_state = 2
         readjson = 1
+        plant = Config.plant
+        starting_day = time.localtime().tm_mday
+        starting_hour = time.localtime().tm_hour
+        starting_min = time.localtime().tm_min
+        try:
+            select_query = Config.get_starting_time.format(plant)
+            cursor = yield conn.execute(select_query)
+            for line in cursor:
+                starting_day = int(line[0].strftime('%d'))
+                starting_hour = int(line[0].strftime('%H'))
+                starting_min = int(line[0].strftime('%M'))
+        except psycopg2.ProgrammingError:
+            try:
+                create_query = Config.create.format(table=plant, id="pkid4")
+                yield conn.execute(create_query)
+            except Exception as error:
+                with open(Config.logs, "a") as logfile:
+                    logfile.write(time.strftime('%Y-%m-%d %H:%M:%S | ', time.localtime()) + "Exception in creating"
+                                                                                            " new table: " + str(error))
+                    logfile.write("\n")
+
+        communication_test = ComCommunication(Config.COM, Config.Speed, starting_day,
+                                              starting_hour, starting_min)
         while flag == 0:
             yield gen.sleep(1)
             yield communication_test.send_data(readjson, current_light_state)
@@ -103,9 +137,9 @@ class InsertHandler:
             # print(data_to_db)
             try:
                 yield conn.execute(data_to_db)
-                print("I've sent some data to db")
+                # print("I've sent some data to db")
             except Exception as error:
-                with open("logs.txt", "a") as logfile:
+                with open(Config.logs, "a") as logfile:
                     logfile.write(time.strftime('%Y-%m-%d %H:%M:%S | ', time.localtime()) +
                                   "Exception in send_to_db: " + str(error))
                     logfile.write("\n")
@@ -116,10 +150,10 @@ class InsertHandler:
                 current_light_state = 0
 
             if not received_data["ReadJson"]:
-                print("json wasn't read")
+                # print("json wasn't read")
                 readjson = 1
             else:
-                print("success")
+                # print("success")
                 readjson = 0
 
 
@@ -149,7 +183,7 @@ class Handler(BaseHandler):
             self.write(fulljson)
             self.write("\n")
         except Exception as error:
-            with open("logs.txt", "a") as logfile:
+            with open(Config.logs, "a") as logfile:
                 logfile.write(time.strftime('%Y-%m-%d %H:%M:%S | ', time.localtime()) +
                               "Exception in send_to_user: " + str(error))
                 logfile.write("\n")
@@ -158,23 +192,23 @@ class Handler(BaseHandler):
 
 
 class ComCommunication:
-    def __init__(self, name, speed):
+    def __init__(self, name, speed, starting_day, starting_hour, starting_min):
         self.name = name    # параметры порта
         self.speed = speed
 
-        # self.current_light_state = 2  # показания света ( 1 - вкл, 0 - выкл, 2 - начальное)
-        self.starting_hour = time.localtime().tm_hour  # время, когда был запущен процесс роста
-        self.starting_min = time.localtime().tm_min
-        self.current_day = Config.Day  # счетчик текущего дня
+        self.starting_day = starting_day    # день, когда был запущен процесс роста
+        self.starting_hour = starting_hour  # час, когда был запущен процесс роста
+        self.starting_min = starting_min    # минута, когда был запущен процесс роста
+        self.current_day = 0  # счетчик текущего дня
         self.light_period = list()  # период освещения растения ( получаем из csv, изначально 0 )
-        self.counter = 0  # счетчик изменения недели ( 1 - обновлено, 0 - не обновлено)
-        self.ard_data = dict()  # данные для Arduino
+        self.counter = 0  # счетчик смены дня ( 1 - нормативы обновлены, 0 - не обновлены)
+        self.ard_data = dict()  # словарь с нормативами для отправки на Arduino
 
         try:
             self.data = serial.Serial(self.name, self.speed)
 
         except serial.serialutil.SerialException:
-            with open("logs.txt", "a") as logfile:
+            with open(Config.logs, "a") as logfile:
                 logfile.write(time.strftime('%Y-%m-%d %H:%M:%S | ', time.localtime()) +
                               "Exception in open serial.")
                 logfile.write("\n")
@@ -188,14 +222,14 @@ class ComCommunication:
                 data_sensor = data_sensor[2:len(data_sensor)-5]
                 # print(data_sensor)
             except Exception as exc:
-                with open("logs.txt", "a") as logfile:
+                with open(Config.logs, "a") as logfile:
                     logfile.write(time.strftime('%Y-%m-%d %H:%M:%S | ', time.localtime()) +
                                   "Exception in reading from serial port: " + str(exc))
                     logfile.write("\n")
                 try:
                     self.data = serial.Serial(self.name, self.speed)
                 except serial.serialutil.SerialException:
-                    with open("logs.txt", "a") as logfile:
+                    with open(Config.logs, "a") as logfile:
                         logfile.write(time.strftime('%Y-%m-%d %H:%M:%S | ', time.localtime()) +
                                       "Failed to reopen serial port.")
                         logfile.write("\n")
@@ -228,7 +262,7 @@ class ComCommunication:
 
                 return data_to_send
             except json.decoder.JSONDecodeError:
-                with open("logs.txt", "a") as logfile:
+                with open(Config.logs, "a") as logfile:
                     logfile.write(time.strftime('%Y-%m-%d %H:%M:%S | ', time.localtime()) +
                                   "Exception in parsing..")
                     logfile.write("\n")
@@ -240,13 +274,22 @@ class ComCommunication:
         e = time.localtime()
         isnotread = readjson
         current_light_state = light_state
+        if e.tm_mday >= self.starting_day:  # определяем текущий день с момента записи первых данных о растении
+            self.current_day = e.tm_mday - self.starting_day
+        else:
+            if e.tm_mon in (1,3,5,7,8,10,12):
+                days = 31
+            elif e.tm_mon in (4,6,9,11):
+                days = 30
+            else:
+                days = 28
+            self.current_day = days - self.starting_day + e.tm_mday
 
         if (e.tm_hour == self.starting_hour) & \
-                (e.tm_min == 1 + self.starting_min):
-            self.counter = 0
+                (e.tm_min == self.starting_min):
+            self.counter = 0    # если час и минута совпали с моментом записи первых данных, то обновляем день
 
-        if (e.tm_hour == self.starting_hour) & \
-                (e.tm_min == self.starting_min) & (self.counter != 1):
+        if self.counter < 1:    # если нормативы для нового дня не считаны,открываем файл конфигурации и сохраняем их
             self.counter = 1
             with open(Config.file, "r") as file:
                 reader = csv.DictReader(file)
@@ -257,9 +300,9 @@ class ComCommunication:
                         # self.ard_data["AirHumidityLimits"] = ast.literal_eval(row["hum"])
                         self.ard_data[Config.soilt_limits] = ast.literal_eval(row["ground_temp"])
                         self.ard_data[Config.soilm_limits] = ast.literal_eval(row["hum_seed"])
-                        self.ard_data["Watering"] = ast.literal_eval(row["watering"])
+                        self.ard_data[Config.watering] = ast.literal_eval(row["watering"])
                         self.ard_data[Config.light] = ast.literal_eval(row["light"])
-                self.current_day += 1
+            # выставляем часы освещения, в зависимости от норматива
             if (self.ard_data[Config.light] != 0) & (e.tm_hour + self.ard_data[Config.light] <= 24):
                 if e.tm_hour + self.ard_data[Config.light] < 24:
                     self.light_period = list(range(e.tm_hour, e.tm_hour + self.ard_data[Config.light] + 1))
@@ -270,16 +313,16 @@ class ComCommunication:
                 light_period_1 = list(range(e.tm_hour, 24))
                 light_period_2 = list(range(0, e.tm_hour + self.ard_data[Config.light] - 24 + 1))
                 self.light_period = light_period_1 + light_period_2
-
+        # проверяем нужно ли переключить свет в зависимости от прошедшего времени и от того, был ли прочитан json
         if (e.tm_hour in self.light_period) & (current_light_state != 1) & isnotread:
             self.ard_data[Config.light] = 1
             self.current_light_state = 1
             data_to_send = json.dumps(self.ard_data)
             try:
                 self.data.write(data_to_send.encode('ascii'))
-                print("I've sent data to Arduino")
+                # print("I've sent data to Arduino. Lights: On")
             except Exception:
-                with open("logs.txt", "a") as logfile:
+                with open(Config.logs, "a") as logfile:
                     logfile.write(time.strftime('%Y-%m-%d %H:%M:%S | ', time.localtime()) +
                                   "Exception in sending to serial port.")
                     logfile.write("\n")
@@ -291,15 +334,13 @@ class ComCommunication:
             # print(data_to_send.encode('ascii'))
             try:
                 self.data.write(data_to_send.encode('ascii'))
-                print("I've sent some data to turn off lights")
+                # print("I've sent some data to Arduino. Lights: Off")
             except Exception:
-                with open("logs.txt", "a") as logfile:
+                with open(Config.logs, "a") as logfile:
                     logfile.write(time.strftime('%Y-%m-%d %H:%M:%S | ', time.localtime()) +
                                   "Exception in sending to serial port.")
                     logfile.write("\n")
 
-
-communication_test = ComCommunication(Config.COM, Config.Speed)
 
 if __name__ == '__main__':
 
